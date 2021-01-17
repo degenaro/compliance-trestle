@@ -19,13 +19,17 @@ Trestle cache operations library.
 Allows for using uris to reference external directories and then expand.
 """
 
+import asyncio
+import getpass
 import logging
 import pathlib
 import re
 import shutil
+import sys
 from abc import ABC, abstractmethod
+import asyncssh
 from typing import Any, Dict, Type
-
+from urllib import parse
 from trestle.core import const
 from trestle.core.base_model import OscalBaseModel
 from trestle.core.err import TrestleError
@@ -149,7 +153,7 @@ class HTTPSFetcher(FetcherBase):
 class SFTPFetcher(FetcherBase):
     """Fetcher for https content."""
 
-    # STFP method: https://stackoverflow.com/questions/7563496/open-a-remote-file-using-paramiko-in-python-slow#7563551
+    # STFP method: https://asyncssh.readthedocs.io/en/stable/#sftp-client
     # For SFTP fetch into memory.
     def __init__(
         self,
@@ -161,9 +165,79 @@ class SFTPFetcher(FetcherBase):
     ) -> None:
         """Initialize STFP fetcher."""
         super().__init__(trestle_root, uri, refresh, fail_hard, cache_only)
+        # Is this a valid uri, however? Username and password are optional, of course.
+        u = parse.urlparse(self._uri)
+        if not u.hostname:
+            logger.error(f'Malformed URI, cannot parse hostname in URL {self._uri}')
+            raise TrestleError(f'Cache request for invalid input URI: missing hostname {self._uri}')
+        if not u.path:
+            logger.error(f'Malformed URI, cannot parse path in URL {self._uri}')
+            raise TrestleError(f'Cache request for invalid input URI: missing file path {self._uri}')
+        if u.password and not u.username:
+            logger.error(f'Malformed URI, password found but username missing in URL {self._uri}')
+            raise TrestleError(f'Cache request for invalid input URI: password found but username missing {self._uri}')
+
+        localhost_cached_dir = self._trestle_cache_path / u.hostname
+        # Skip any number of back- or forward slashes preceding the url path (u.path)
+        localhost_cached_dir = localhost_cached_dir / pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0]:]).parent
+        try:
+            localhost_cached_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+                logger.error(f'Error creating cache directory {localhost_cached_dir} for {self._uri}')
+                logger.debug(e)
+                raise TrestleError(f'Cache update failure for {self._uri}')
+        self._inst_cache_path = localhost_cached_dir
+
+    async def _run_client(self, hostname: str, get_path: str, username: str, password: str, localpath: str) -> None:
+        """sftp client run"""
+        if username and password:
+            async with asyncssh.connect(host=hostname, username=username, password=password) as conn:
+                async with conn.start_sftp_client() as sftp:
+                    await sftp.get(get_path, localpath=localpath)
+        if username and not password:
+            async with asyncssh.connect(host=hostname, username=username) as conn:
+                async with conn.start_sftp_client() as sftp:
+                    await sftp.get(get_path, localpath=localpath)
 
     def _update_cache(self) -> None:
-        pass
+        if self._cache_only:
+            # Don't update if cache only.
+            return
+
+        u = parse.urlparse(self._uri)
+        if self._inst_cache_path.exists() and self._refresh:
+            # client.load_system_host_keys()
+            username = getpass.getuser() if not u.username else u.username
+            localpath = self._inst_cache_path / pathlib.Path(u.path).name
+            # if u.password:
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    self._run_client(
+                        hostname = u.hostname,
+                        get_path = u.path,
+                        username = username,
+                        password = u.password,
+                        localpath = localpath.__str__()
+                    )
+                )
+            except Exception as e:
+                logger.error(f'Error getting remote resource {self._uri} into cache {localpath}')
+                logger.debug(e)
+                raise TrestleError(f'Cache update failure for {self._uri}')
+            # else:
+            #     try:
+            #         asyncio.get_event_loop().run_until_complete(
+            #             self._run_client(
+            #                 hostname = u.hostname,
+            #                 get_path = u.path,
+            #                 username = username,
+            #                 localpath = localpath.__str__()
+            #             )
+            #         )
+            #     except Exception as e:
+            #         logger.error(f'Error getting remote resource {self._uri} into cache {localpath}')
+            #         logger.debug(e)
+            #         raise TrestleError(f'Cache update failure for {self._uri}')
 
 
 class GithubFetcher(HTTPSFetcher):
@@ -212,13 +286,19 @@ class FetcherFactory(object):
         elif 'sftp://' == uri[0:7]:
             return SFTPFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
         elif 'https://' == uri[0:8]:
-            # Test for github uri assumption - must be first after basic auth (if it exists)
-            cleaned = uri[8:]
-            # tests for special scenarios
-            if cleaned.split('@')[-1][0:7] == 'github.':
-                return GithubFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
+            # Check for valid URL:
+            u = parse.urlparse(uri)
+            if u.hostname:
+                # Test for github uri assumption - must be first after basic auth (if it exists)
+                cleaned = uri[8:]
+                # tests for special scenarios
+                if cleaned.split('@')[-1][0:7] == 'github.':
+                    return GithubFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
+                else:
+                    return HTTPSFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
             else:
-                return HTTPSFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
+                logger.error(f'Malformed URI, cannot parse hostname in URL {uri}')
+                raise TrestleError(f'Cache request for input URI: cannot find hostname {uri}')
         elif 'C:\\' == uri[0:3]:
             return LocalFetcher(trestle_root, uri, refresh, fail_hard, cache_only)
         else:
