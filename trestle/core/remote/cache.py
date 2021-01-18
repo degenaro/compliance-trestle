@@ -153,7 +153,7 @@ class HTTPSFetcher(FetcherBase):
 class SFTPFetcher(FetcherBase):
     """Fetcher for https content."""
 
-    # STFP method: https://asyncssh.readthedocs.io/en/stable/#sftp-client
+    # SFTP method: https://asyncssh.readthedocs.io/en/stable/#sftp-client
     # For SFTP fetch into memory.
     def __init__(
         self,
@@ -163,7 +163,7 @@ class SFTPFetcher(FetcherBase):
         fail_hard: bool = False,
         cache_only: bool = False
     ) -> None:
-        """Initialize STFP fetcher."""
+        """Initialize SFTP fetcher."""
         super().__init__(trestle_root, uri, refresh, fail_hard, cache_only)
         # Is this a valid uri, however? Username and password are optional, of course.
         u = parse.urlparse(self._uri)
@@ -177,27 +177,17 @@ class SFTPFetcher(FetcherBase):
             logger.error(f'Malformed URI, password found but username missing in URL {self._uri}')
             raise TrestleError(f'Cache request for invalid input URI: password found but username missing {self._uri}')
 
-        localhost_cached_dir = self._trestle_cache_path / u.hostname
+        sftp_cached_dir = self._trestle_cache_path / u.hostname
         # Skip any number of back- or forward slashes preceding the url path (u.path)
-        localhost_cached_dir = localhost_cached_dir / pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0]:]).parent
-        try:
-            localhost_cached_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-                logger.error(f'Error creating cache directory {localhost_cached_dir} for {self._uri}')
-                logger.debug(e)
-                raise TrestleError(f'Cache update failure for {self._uri}')
-        self._inst_cache_path = localhost_cached_dir
+        sftp_cached_dir = sftp_cached_dir / pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0]:]).parent
+        sftp_cached_dir.mkdir(parents=True, exist_ok=True)
+        self._inst_cache_path = sftp_cached_dir
 
     async def _run_client(self, hostname: str, get_path: str, username: str, password: str, localpath: str) -> None:
         """sftp client run"""
-        if username and password:
-            async with asyncssh.connect(host=hostname, username=username, password=password) as conn:
-                async with conn.start_sftp_client() as sftp:
-                    await sftp.get(get_path, localpath=localpath)
-        if username and not password:
-            async with asyncssh.connect(host=hostname, username=username) as conn:
-                async with conn.start_sftp_client() as sftp:
-                    await sftp.get(get_path, localpath=localpath)
+        async with asyncssh.connect(host=hostname, username=username, password=password) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.get(get_path, localpath=localpath)
 
     def _update_cache(self) -> None:
         if self._cache_only:
@@ -206,10 +196,8 @@ class SFTPFetcher(FetcherBase):
 
         u = parse.urlparse(self._uri)
         if self._inst_cache_path.exists() and self._refresh:
-            # client.load_system_host_keys()
             username = getpass.getuser() if not u.username else u.username
             localpath = self._inst_cache_path / pathlib.Path(u.path).name
-            # if u.password:
             try:
                 asyncio.get_event_loop().run_until_complete(
                     self._run_client(
@@ -224,20 +212,6 @@ class SFTPFetcher(FetcherBase):
                 logger.error(f'Error getting remote resource {self._uri} into cache {localpath}')
                 logger.debug(e)
                 raise TrestleError(f'Cache update failure for {self._uri}')
-            # else:
-            #     try:
-            #         asyncio.get_event_loop().run_until_complete(
-            #             self._run_client(
-            #                 hostname = u.hostname,
-            #                 get_path = u.path,
-            #                 username = username,
-            #                 localpath = localpath.__str__()
-            #             )
-            #         )
-            #     except Exception as e:
-            #         logger.error(f'Error getting remote resource {self._uri} into cache {localpath}')
-            #         logger.debug(e)
-            #         raise TrestleError(f'Cache update failure for {self._uri}')
 
 
 class GithubFetcher(HTTPSFetcher):
