@@ -23,7 +23,6 @@ from unittest import mock
 from unittest.mock import patch
 
 import pytest
-
 import trestle.core.err as err
 from trestle.core import generators
 from trestle.core.err import TrestleError
@@ -173,49 +172,71 @@ def test_fetcher_bad_uri(tmp_trestle_dir):
                 'sftp://blah.com',
                 'sftp:///path/to/file.json',
                 'sftp://user:pass@hostname.com\\path\\to\\file.json',
-                'sftp://:pass@hostname.com/path/to/file.json']:
+                'sftp://:pass@hostname.com/path/to/file.json',
+                'https://username:password@placekitten.com/200/300',
+                'https://username:password@github.com/DrJohnWagner/recipes/blob/master/README.md']:
         with pytest.raises(TrestleError):
             cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), uri, False, False)
+
+
+def test_fetcher_good_uri(tmp_trestle_dir):
+    """Test fetcher factory with good URI."""
+    settings = Settings()
+    for t in [
+        ('file:///home/user/oscal_file.json', cache.LocalFetcher),
+        ('/home/user/oscal_file.json', cache.LocalFetcher),
+        ('../../file.json', cache.LocalFetcher),
+        ('sftp://user@hostname:/path/to/file.json', cache.SFTPFetcher),
+        ('sftp://user@hostname:2000/path/to/file.json', cache.SFTPFetcher),
+        ('https://placekitten.com/200/300', cache.HTTPSFetcher),
+        ('https://{{USERNAME}}:{{PASSWORD}}@placekitten.com/200/300', cache.HTTPSFetcher),
+        ('https://github.ibm.com/aur-mma/ai-for-the-eye/blob/master/README.md', cache.GithubFetcher),
+        ('https://github.com/DrJohnWagner/recipes/blob/master/README.md', cache.GithubFetcher)]:
+        with pytest.raises(TrestleError):
+            fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir),
+                t[0], settings, False, False)
+            assert type(fetcher) == t[1]
+            fetcher._sync_cache()
 
 
 def test_fetcher_factory(tmp_trestle_dir: pathlib.Path) -> None:
     settings = Settings()
 
-    """Test that the fetcher factory correctly resolves functionality."""
-    local_uri_1 = 'file:///home/user/oscal_file.json'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_1, settings, False, False)
-    assert type(fetcher) == cache.LocalFetcher
+#     """Test that the fetcher factory correctly resolves functionality."""
+#     local_uri_1 = 'file:///home/user/oscal_file.json'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_1, settings, False, False)
+#     assert type(fetcher) == cache.LocalFetcher
 
-    local_uri_2 = '/home/user/oscal_file.json'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_2, settings, False, False)
-    assert type(fetcher) == cache.LocalFetcher
+#     local_uri_2 = '/home/user/oscal_file.json'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_2, settings, False, False)
+#     assert type(fetcher) == cache.LocalFetcher
 
-    local_uri_3 = '../../file.json'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_3, settings, False, False)
-    assert type(fetcher) == cache.LocalFetcher
+#     local_uri_3 = '../../file.json'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), local_uri_3, settings, False, False)
+#     assert type(fetcher) == cache.LocalFetcher
 
-    sftp_uri = 'sftp://user@hostname:/path/to/file.json'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), sftp_uri, settings, False, False)
-    assert type(fetcher) == cache.SFTPFetcher
+#     sftp_uri = 'sftp://user@hostname:/path/to/file.json'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), sftp_uri, settings, False, False)
+#     assert type(fetcher) == cache.SFTPFetcher
 
-    sftp_uri_2 = 'sftp://user@hostname:2000/path/to/file.json'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), sftp_uri_2, settings, False, False)
-    assert type(fetcher) == cache.SFTPFetcher
+#     sftp_uri_2 = 'sftp://user@hostname:2000/path/to/file.json'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), sftp_uri_2, settings, False, False)
+#     assert type(fetcher) == cache.SFTPFetcher
 
-    # https_uri = 'https://placekitten.com/200/300'
-    # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), https_uri, settings, False, False)
-    # assert type(fetcher) == cache.HTTPSFetcher
+#     # https_uri = 'https://placekitten.com/200/300'
+#     # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), https_uri, settings, False, False)
+#     # assert type(fetcher) == cache.HTTPSFetcher
 
-    https_basic_auth = 'https://{{USERNAME}}:{{PASSWORD}}@placekitten.com/200/300'
-    fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), https_basic_auth, settings, False, False)
-    assert type(fetcher) == cache.HTTPSFetcher
+#     https_basic_auth = 'https://{{USERNAME}}:{{PASSWORD}}@placekitten.com/200/300'
+#     fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), https_basic_auth, settings, False, False)
+#     assert type(fetcher) == cache.HTTPSFetcher
 
-    # github_url_1 = 'https://github.com/DrJohnWagner/recipes/blob/master/README.md'
-    # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), github_url_1, settings, False, False)
-    # assert type(fetcher) == cache.GithubFetcher
-    # fetcher._sync_cache()
+#     # github_url_1 = 'https://github.com/DrJohnWagner/recipes/blob/master/README.md'
+#     # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), github_url_1, settings, False, False)
+#     # assert type(fetcher) == cache.GithubFetcher
+#     # fetcher._sync_cache()
 
-    # github_url_2 = 'https://github.ibm.com/aur-mma/ai-for-the-eye/blob/master/README.md'
-    # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), github_url_2, settings, False, False)
-    # assert type(fetcher) == cache.GithubFetcher
-    # fetcher._sync_cache()
+#     # github_url_2 = 'https://github.ibm.com/aur-mma/ai-for-the-eye/blob/master/README.md'
+#     # fetcher = cache.FetcherFactory.get_fetcher(pathlib.Path(tmp_trestle_dir), github_url_2, settings, False, False)
+#     # assert type(fetcher) == cache.GithubFetcher
+#     # fetcher._sync_cache()
