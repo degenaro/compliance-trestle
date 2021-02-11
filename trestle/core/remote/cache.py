@@ -21,27 +21,30 @@ Allows for using uris to reference external directories and then expand.
 
 import errno
 import getpass
-import json
 import logging
 import os
 import pathlib
 import re
 import shutil
-import sys
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Type
 from urllib import parse
 
-import paramiko
-import requests
 from furl import furl
+
+import paramiko
+
+import requests
 from requests.auth import HTTPBasicAuth
+
 from trestle.core import const
 from trestle.core.base_model import OscalBaseModel
 from trestle.core.err import TrestleError
 from trestle.core.settings import Settings
+from trestle.utils import fs
 
 logger = logging.getLogger(__name__)
+
 
 class FetcherBase(ABC):
     """FetcherBase - base class for fetching remote oscal objects."""
@@ -96,13 +99,33 @@ class FetcherBase(ABC):
 
     def get_raw(self) -> Dict[str, Any]:
         """Get the raw dictionary representing the underlying object."""
-        self._update_cache()
-        # Results are now in the cache.
-        pass
+        try:
+            self._update_cache()
+        except TrestleError as e:
+            logger.error(f'Cannot get_raw due to failed _update_cache for {self._uri}')
+            logger.debug(e)
+            raise TrestleError(f'Cache get failure for {self._uri}') from e
+        # Return results in the cache, whether yaml or json, or whatever is supported by fs.load_file().
+        try:
+            return fs.load_file(self._inst_cache_path)
+        except Exception as e:
+            logger.error(f'Cannot fs.load_file {self._inst_cache_path}')
+            logger.debug(e)
+            raise TrestleError(f'Cache get failure for {self._uri}') from e
 
     def get_oscal(self, model_type: Type[OscalBaseModel]) -> OscalBaseModel:
         """Retrieve the cached file as a particular OSCAL model."""
-        pass
+        cache_file = self._inst_cache_path
+        if cache_file.exists():
+            try:
+                return model_type.oscal_read(cache_file)
+            except Exception as e:
+                logger.error(f'get_oscal failed, JSON error loading cache file for {self._uri} as {model_type}')
+                logger.debug(e)
+                raise TrestleError(f'get_oscal failure for {self._uri}') from e
+        else:
+            logger.error(f'get_oscal error, no cached file for {self._uri}')
+            raise TrestleError(f'get_oscal failure for {self._uri}')
 
     def in_cache(self) -> bool:
         """Return whether object is contained within the cache or not."""
@@ -140,7 +163,7 @@ class LocalFetcher(FetcherBase):
         cache_location_string_relative = cache_location_string[non_slash_start:]
         localhost_cached_dir = localhost_cached_dir / pathlib.Path(cache_location_string_relative)
         localhost_cached_dir.mkdir(parents=True, exist_ok=True)
-        self._inst_cache_path = localhost_cached_dir
+        self._inst_cache_path = localhost_cached_dir / pathlib.Path(pathlib.Path(self._uri).name)
 
     def _sync_cache(self) -> None:
         shutil.copy(self._abs_path, self._inst_cache_path)
@@ -160,7 +183,7 @@ class HTTPSFetcher(FetcherBase):
         cache_only: bool = False
     ) -> None:
         """Initialize HTTPS fetcher."""
-        logger.debug("Initializing HTTPSFetcher")
+        logger.debug('Initializing HTTPSFetcher')
         super().__init__(trestle_root, uri, settings, refresh, fail_hard, cache_only)
         self._furl = furl(uri)
         self._username = None
@@ -169,22 +192,36 @@ class HTTPSFetcher(FetcherBase):
         username = self._furl.username
         password = self._furl.password
         if username is not None:
-            if not username.startswith("{{") or not username.endswith("}}"):
-                logger.error(f'Malformed URI, username must refer to an environment variable using moustache {self._uri}')
-                raise TrestleError(f'Cache request for invalid input URI: username must refer to an environment variable using moustache {self._uri}')
+            if not username.startswith('{{') or not username.endswith('}}'):
+                logger.error(
+                    f'Malformed URI, username must refer to an environment variable using moustache {self._uri}'
+                )
+                raise TrestleError(
+                    'Cache request for invalid input URI:'
+                    f'username must refer to an environment variable using moustache {self._uri}'
+                )
             username = username[2:-2]
             if username not in os.environ:
                 logger.error(f'Malformed URI, username not found in the environment {self._uri}')
-                raise TrestleError(f'Cache request for invalid input URI: username not found in the environment {self._uri}')
+                raise TrestleError(
+                    f'Cache request for invalid input URI: username not found in the environment {self._uri}'
+                )
             self._username = os.environ[username]
         if password is not None:
-            if not password.startswith("{{") or not password.endswith("}}"):
-                logger.error(f'Malformed URI, password must refer to an environment variable using moustache {self._uri}')
-                raise TrestleError(f'Cache request for invalid input URI: password must refer to an environment variable using moustache {self._uri}')
+            if not password.startswith('{{') or not password.endswith('}}'):
+                logger.error(
+                    f'Malformed URI, password must refer to an environment variable using moustache {self._uri}'
+                )
+                raise TrestleError(
+                    'Cache request for invalid input URI: '
+                    f'password must refer to an environment variable using moustache {self._uri}'
+                )
             password = password[2:-2]
             if password not in os.environ:
                 logger.error(f'Malformed URI, password not found in the environment {self._uri}')
-                raise TrestleError(f'Cache request for invalid input URI: password not found in the environment {self._uri}')
+                raise TrestleError(
+                    f'Cache request for invalid input URI: password not found in the environment {self._uri}'
+                )
             self._password = os.environ[password]
         if self._username and not self._password:
             logger.error(f'Malformed URI, username found but password missing in URL {self._uri}')
@@ -193,9 +230,11 @@ class HTTPSFetcher(FetcherBase):
             logger.error(f'Malformed URI, password found but username missing in URL {self._uri}')
             raise TrestleError(f'Cache request for invalid input URI: password found but username missing {self._uri}')
         if self._username is not None or self._password is not None:
-            if self._furl.scheme != "https":
+            if self._furl.scheme != 'https':
                 logger.error(f'Malformed URI, basic authentication requires https {self._uri}')
-                raise TrestleError(f'Cache request for invalid input URI: basic authentication requires https {self._uri}')
+                raise TrestleError(
+                    f'Cache request for invalid input URI: basic authentication requires https {self._uri}'
+                )
         self._furl.username = None
         self._furl.password = None
 
@@ -204,21 +243,20 @@ class HTTPSFetcher(FetcherBase):
         if self._username is not None and self._password is not None:
             auth = HTTPBasicAuth(self._username, self._password)
         request = requests.get(self._furl.url, auth=auth)
-        # if request.status_code == 200:
-        #     result = request.json()
-        #     if result is None:
-        #         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
-        #             str(self._inst_cache_path))
-        #     if result["isBinary"]:
-        #         raise NotImplementedError("Binary files are not supported!")
-        #     else:
-        #         self._inst_cache_path.write_text(result["text"])
-        # else:
-        #     raise TrestleError(f"Query failed to run by returning code of "
-        #                        f"{request.status_code}. {self._query}")
+        if request.status_code == 200:
+            result = request.json()
+            if result is None:
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self._inst_cache_path))
+            if result['isBinary']:
+                raise NotImplementedError('Binary files are not supported!')
+            else:
+                self._inst_cache_path.write_text(result['text'])
+        else:
+            raise TrestleError(f'Query failed to run by returning code of ' f'{request.status_code}. {self._query}')
+
 
 class SFTPFetcher(FetcherBase):
-    """Fetcher for https content."""
+    """Fetcher for SFTP content."""
 
     # STFP method: https://stackoverflow.com/questions/7563496/open-a-remote-file-using-paramiko-in-python-slow#7563551
     # For SFTP fetch into memory.
@@ -249,13 +287,8 @@ class SFTPFetcher(FetcherBase):
         # Skip any number of back- or forward slashes preceding the url path (u.path)
         path_parent = pathlib.Path(u.path[re.search('[^/\\\\]', u.path).span()[0]:]).parent
         localhost_cached_dir = localhost_cached_dir / path_parent
-        try:
-            localhost_cached_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.error(f'Error creating cache directory {localhost_cached_dir} for {self._uri}')
-            logger.debug(e)
-            raise TrestleError(f'Cache update failure for {self._uri}')
-        self._inst_cache_path = localhost_cached_dir
+        localhost_cached_dir.mkdir(parents=True, exist_ok=True)
+        self._inst_cache_path = localhost_cached_dir / pathlib.Path(pathlib.Path(u.path).name)
 
     def _sync_cache(self) -> None:
         u = parse.urlparse(self._uri)
@@ -270,7 +303,7 @@ class SFTPFetcher(FetcherBase):
                 logger.debug(e)
                 raise TrestleError(f'Cache update failure for {self._uri}')
 
-        elif self._inst_cache_path.exists() and self._refresh:
+        elif 'SSH_KEY' not in os.environ and self._inst_cache_path.parent.exists() and self._refresh:
             try:
                 client.load_system_host_keys()
             except Exception as e:
@@ -306,7 +339,7 @@ class SFTPFetcher(FetcherBase):
             logger.debug(e)
             raise TrestleError(f'Cache update failure to open sftp for {username}@{u.hostname}')
 
-        localpath = self._inst_cache_path / pathlib.Path(u.path).name
+        localpath = self._inst_cache_path
         try:
             sftp_client.get(remotepath=u.path[1:], localpath=(localpath.__str__()))
         except Exception as e:
@@ -319,6 +352,7 @@ class SFTPFetcher(FetcherBase):
 # Do https://gist.github.com/gbaman/b3137e18c739e0cf98539bf4ec4366ad#gistcomment-2747872
 # or https://gist.github.com/gbaman/b3137e18c739e0cf98539bf4ec4366ad#gistcomment-2752081
 # or https://gist.github.com/gbaman/b3137e18c739e0cf98539bf4ec4366ad#gistcomment-2865053
+
 
 class GithubFetcher(HTTPSFetcher):
     """Github fetcher which supports both github and GHE URLs."""
@@ -333,36 +367,34 @@ class GithubFetcher(HTTPSFetcher):
         cache_only: bool = False
     ) -> None:
         """Initialize github specific fetcher."""
-        logger.debug("Initializing GithubFetcher")
+        logger.debug('Initializing GithubFetcher')
         super().__init__(trestle_root, uri, settings, refresh, fail_hard, cache_only)
         host = self._furl.host
         path = self._furl.path.segments
         params = self._furl.query.params
         #
         if self._furl.username is not None or self._furl.password is not None:
-            raise TrestleError(f"Username/password authentication"
-                               f"is not supported for Github URIs {uri}")
+            raise TrestleError(f'Username/password authentication is not supported for Github URIs {uri}')
         if len(path) < 5:
-            raise TrestleError(f"Path in uri appears to be invalid {uri}")
-        if params.get("token") != None:
-            logger.warn(f"Token in uri will be ignored {uri}")
-        assert path[2] == "blob"
+            raise TrestleError(f'Path in uri appears to be invalid {uri}')
+        if params.get('token') is not None:
+            logger.warn(f'Token in uri will be ignored {uri}')
+        assert path[2] == 'blob'
         #
         owner = path[0]
         name = path[1]
         rev = path[3]
         #
-        src_filepath = pathlib.Path("/".join(path[4:]))
-        dst_directory = pathlib.Path(self._trestle_cache_path /
-            host / owner / name).absolute()
+        src_filepath = pathlib.Path('/'.join(path[4:]))
+        dst_directory = pathlib.Path(self._trestle_cache_path / host / owner / name).absolute()
         dst_directory.mkdir(parents=True, exist_ok=True)
         self._inst_cache_path = dst_directory / src_filepath
         #
-        self._api = "https://api.github.com/graphql"
-        if host != "github.com":
-            self._api = "https://" + host + "/api/graphql"
+        self._api = 'https://api.github.com/graphql'
+        if host != 'github.com':
+            self._api = 'https://' + host + '/api/graphql'
         #
-        self._token = ""
+        self._token = ''
         if settings is not None and host in settings.GITHUB_TOKENS.keys():
             self._token = settings.GITHUB_TOKENS[host]
         #
@@ -383,28 +415,27 @@ class GithubFetcher(HTTPSFetcher):
                 }
             }
             """
-        self._variables = {
-            "owner": owner, "name": name, "rev": rev + ":" + str(src_filepath)
-        }
+        self._variables = {'owner': owner, 'name': name, 'rev': rev + ':' + str(src_filepath)}
 
     def _sync_cache(self) -> None:
-        request = requests.post(self._api,
-            json={"query": self._query, "variables": self._variables},
-            headers={"Authorization": "Bearer " + self._token }
+        request = requests.post(
+            self._api,
+            json={
+                'query': self._query, 'variables': self._variables
+            },
+            headers={'Authorization': 'Bearer ' + self._token}
         )
         if request.status_code == 200:
             result = request.json()
-            result = result["data"]["repository"]["object"]
+            result = result['data']['repository']['object']
             if result is None:
-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT),
-                    str(self._inst_cache_path))
-            if result["isBinary"]:
-                raise NotImplementedError("Binary files are not supported!")
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self._inst_cache_path))
+            if result['isBinary']:
+                raise NotImplementedError('Binary files are not supported!')
             else:
-                self._inst_cache_path.write_text(result["text"])
+                self._inst_cache_path.write_text(result['text'])
         else:
-            raise TrestleError(f"Query failed to run by returning code of "
-                               f"{request.status_code}. {self._query}")
+            raise TrestleError(f'Query failed to run by returning code of {request.status_code}. {self._query}')
 
 
 class FetcherFactory(object):
